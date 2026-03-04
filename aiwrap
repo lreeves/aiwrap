@@ -169,7 +169,15 @@ def main():
         return
 
     if not args.tool:
-        parser.error("specify a tool or --setup")
+        print("Available tools:")
+        for name, cfg in TOOLS.items():
+            if cfg.get("pkg"):
+                print(f"  {name} - {cfg['pkg']}")
+            else:
+                print(f"  {name}")
+        print(f"\nRun '{sys.argv[0]} --setup' to install tools")
+        print(f"Run '{sys.argv[0]} <tool>' to launch a tool")
+        return
 
     if not TOOLS_DIR.is_dir():
         print(
