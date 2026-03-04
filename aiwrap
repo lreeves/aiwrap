@@ -29,7 +29,7 @@ ENV_BASE = [
 # Tool definitions: npm package, command, writable dotdirs, env vars
 TOOLS = {
     "bash":   {"cmd": ["bash"]},
-    "claude": {"pkg": "@anthropic-ai/claude-code",      "rw": [".claude", ".local/share/claude"],
+    "claude": {"pkg": "@anthropic-ai/claude-code",      "rw": [".claude", ".local/share/claude", ".local/state/claude"],
                "rw_files": [".claude.json"],
                "env": ["ANTHROPIC_API_KEY"]},
     "codex":  {"pkg": "@openai/codex@latest",            "rw": [".codex"],
