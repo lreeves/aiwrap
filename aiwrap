@@ -1,0 +1,200 @@
+#!/usr/bin/env python3
+"""Launch a sandboxed coding tool using bubblewrap (bwrap).
+
+Two-phase approach:
+  1. `./aiwrap --setup` — installs tools into ~/.local/share/aiwrap/tools/
+  2. `./aiwrap <tool>`  — runs the tool inside a bwrap sandbox
+"""
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+TOOLS_DIR = Path.home() / ".local/share/aiwrap/tools"
+NODE_PREFIX = TOOLS_DIR / "node"
+# Where npm puts bins when prefix is set
+NODE_BIN = NODE_PREFIX / "bin"
+HOME = Path.home()
+
+# Environment variables passed to every tool
+ENV_BASE = [
+    "LANG", "LC_ALL",
+    "TERM", "COLORTERM",
+    "HOME", "USER", "LOGNAME", "SHELL",
+    "EDITOR", "VISUAL",
+]
+
+# Tool definitions: npm package, command, writable dotdirs, env vars
+TOOLS = {
+    "bash":   {"cmd": ["bash"]},
+    "claude": {"pkg": "@anthropic-ai/claude-code",      "rw": [".claude"],
+               "env": ["ANTHROPIC_API_KEY"]},
+    "codex":  {"pkg": "@openai/codex@latest",            "rw": [".codex"],
+               "env": ["OPENAI_API_KEY"]},
+    "gemini": {"pkg": "@google/gemini-cli@latest",       "rw": [".gemini"],
+               "env": ["GOOGLE_API_KEY", "GEMINI_API_KEY"]},
+    "pi":     {"pkg": "@mariozechner/pi-coding-agent",   "rw": [".pi"],
+               "env": ["ANTHROPIC_API_KEY"]},
+    "qwen":   {"pkg": "@qwen-code/qwen-code@latest",    "rw": [".qwen"]},
+}
+
+
+def setup_tools():
+    """Install all npm tools into the local tools prefix."""
+    # Remove existing tools directory for a clean install
+    if TOOLS_DIR.exists():
+        print(f"Removing existing tools directory: {TOOLS_DIR}")
+        import shutil
+        shutil.rmtree(TOOLS_DIR)
+
+    TOOLS_DIR.mkdir(parents=True, exist_ok=True)
+
+    env = os.environ.copy()
+    env["npm_config_prefix"] = str(NODE_PREFIX)
+
+    for name, cfg in TOOLS.items():
+        pkg = cfg.get("pkg")
+        if not pkg:
+            continue
+        print(f"Installing {pkg} ...")
+        subprocess.run(["npm", "install", "-g", pkg], env=env, check=True)
+
+    print(f"\nTools installed in {TOOLS_DIR}")
+    print(f"Binaries in {NODE_BIN}")
+
+
+def build_bwrap_cmd(tool: str, extra_args: list[str]) -> list[str]:
+    """Build the bwrap command line."""
+    work_dir = str(Path.cwd().resolve())
+
+    cmd = [
+        "bwrap",
+        # New namespaces (user ns is implicit)
+        "--unshare-pid",
+        "--unshare-uts",
+        "--unshare-cgroup",
+        # Die when parent dies
+        "--die-with-parent",
+        # Mount the base filesystem read-only
+        "--ro-bind", "/usr", "/usr",
+        "--ro-bind", "/etc", "/etc",
+        "--ro-bind", "/bin", "/bin",
+        "--ro-bind", "/lib", "/lib",
+        "--ro-bind", "/run", "/run",
+        "--symlink", "usr/lib", "/lib64",   # needed on some distros
+        # Writable /tmp and /var/tmp
+        "--tmpfs", "/tmp",
+        "--tmpfs", "/var/tmp",
+        # Proc and dev
+        "--proc", "/proc",
+        "--dev", "/dev",
+    ]
+
+    # Bind sbin if it exists (some distros)
+    if Path("/sbin").exists() and not Path("/sbin").is_symlink():
+        cmd += ["--ro-bind", "/sbin", "/sbin"]
+
+    # Working directory (writable, same path as host — like Podman enter)
+    cmd += [
+        "--bind", work_dir, work_dir,
+        "--chdir", work_dir,
+    ]
+
+    # Tools prefix (read-only)
+    cmd += ["--ro-bind", str(NODE_PREFIX), str(NODE_PREFIX)]
+
+    # pyenv (read-only)
+    pyenv_dir = HOME / ".pyenv"
+    if pyenv_dir.is_dir():
+        cmd += ["--ro-bind", str(pyenv_dir), str(pyenv_dir)]
+
+    # gitconfig (read-only)
+    gitconfig = HOME / ".gitconfig"
+    if gitconfig.is_file():
+        cmd += ["--ro-bind", str(gitconfig), str(gitconfig)]
+
+    # Per-tool writable dotdirs
+    cfg = TOOLS[tool]
+    for dotdir in cfg.get("rw", []):
+        p = HOME / dotdir
+        p.mkdir(parents=True, exist_ok=True)
+        cmd += ["--bind", str(p), str(p)]
+
+    # Clean environment: only pass through what's needed
+    cmd += ["--clearenv"]
+    cmd += [
+        "--setenv", "PATH",
+        f"{NODE_BIN}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+    ]
+    for var in ENV_BASE + cfg.get("env", []):
+        val = os.environ.get(var)
+        if val is not None:
+            cmd += ["--setenv", var, val]
+
+    # Command to run
+    tool_cmd = cfg.get("cmd", [str(NODE_BIN / tool)])
+    cmd += ["--"]
+    cmd += tool_cmd
+    cmd.extend(extra_args)
+
+    return cmd
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Launch a sandboxed coding tool using bubblewrap."
+    )
+    parser.add_argument(
+        "tool",
+        nargs="?",
+        choices=list(TOOLS.keys()),
+        help="tool to run inside the sandbox",
+    )
+    parser.add_argument(
+        "--setup",
+        action="store_true",
+        help="install/update tools into the local prefix",
+    )
+    parser.add_argument(
+        "args",
+        nargs=argparse.REMAINDER,
+        help="arguments to pass to the tool",
+    )
+    args = parser.parse_args()
+
+    if args.setup:
+        setup_tools()
+        return
+
+    if not args.tool:
+        parser.error("specify a tool or --setup")
+
+    if not TOOLS_DIR.is_dir():
+        print(
+            f"Tools directory not found. Run: {sys.argv[0]} --setup",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if not NODE_BIN.is_dir():
+        print(
+            f"Tools not installed. Run: {sys.argv[0]} --setup",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if not shutil.which("bwrap"):
+        print(
+            "bubblewrap (bwrap) not found. Install it with your package manager.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    cmd = build_bwrap_cmd(args.tool, args.args)
+    os.execvp(cmd[0], cmd)
+
+
+if __name__ == "__main__":
+    main()
