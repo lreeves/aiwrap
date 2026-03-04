@@ -29,7 +29,8 @@ ENV_BASE = [
 # Tool definitions: npm package, command, writable dotdirs, env vars
 TOOLS = {
     "bash":   {"cmd": ["bash"]},
-    "claude": {"pkg": "@anthropic-ai/claude-code",      "rw": [".claude"],
+    "claude": {"pkg": "@anthropic-ai/claude-code",      "rw": [".claude", ".local/share/claude"],
+               "rw_files": [".claude.json"],
                "env": ["ANTHROPIC_API_KEY"]},
     "codex":  {"pkg": "@openai/codex@latest",            "rw": [".codex"],
                "env": ["OPENAI_API_KEY"]},
@@ -120,6 +121,13 @@ def build_bwrap_cmd(tool: str, extra_args: list[str]) -> list[str]:
     for dotdir in cfg.get("rw", []):
         p = HOME / dotdir
         p.mkdir(parents=True, exist_ok=True)
+        cmd += ["--bind", str(p), str(p)]
+
+    # Per-tool writable dotfiles (individual files, not directories)
+    for dotfile in cfg.get("rw_files", []):
+        p = HOME / dotfile
+        if not p.exists():
+            p.touch()
         cmd += ["--bind", str(p), str(p)]
 
     # Clean environment: only pass through what's needed
