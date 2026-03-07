@@ -27,6 +27,11 @@ ENV_BASE = [
 ]
 
 # Tool definitions: npm package, command, writable dotdirs, env vars
+# Supplemental npm packages installed during setup (not tied to a specific tool)
+EXTRA_PACKAGES = [
+    "pyright",
+]
+
 TOOLS = {
     "bash":   {"cmd": ["bash"]},
     "claude": {"pkg": "@anthropic-ai/claude-code",      "rw": [".claude", ".local/share/claude", ".local/state/claude"],
@@ -59,6 +64,10 @@ def setup_tools():
         pkg = cfg.get("pkg")
         if not pkg:
             continue
+        print(f"Installing {pkg} ...")
+        subprocess.run(["npm", "install", "-g", pkg], env=env, check=True)
+
+    for pkg in EXTRA_PACKAGES:
         print(f"Installing {pkg} ...")
         subprocess.run(["npm", "install", "-g", pkg], env=env, check=True)
 
